@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
+import 'package:camera/camera.dart';
 
 class HomePage extends StatefulWidget {
   @override
@@ -12,93 +13,235 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  String parsedtext = ''; // 추출된 텍스트를 저장할 String 변수
+  String parsedtext = '';
   String filepath = '';
+  late CameraController _cameraController;
 
-  parsethetext() async {
-    final pickedFile = await ImagePicker().getImage(source: ImageSource.gallery);
-    if (pickedFile == null) return;
-    var bytes = File(pickedFile.path.toString()).readAsBytesSync();
-    String img64 = base64Encode(bytes);
-
-    var url = 'https://api.ocr.space/parse/image';
-    var payload = {"base64Image": "data:image/jpg;base64,${img64.toString()}","language" :"kor"};
-    var header = {"apikey" :"K86070579388957"};
-
-    var post = await http.post(Uri.parse(url),body: payload,headers: header);
-    var result = jsonDecode(post.body); // 추출 결과를 받아서 result에 저장
-    setState(() {
-      parsedtext = result['ParsedResults'][0]['ParsedText']; // 추출결과를 다시 parsedtext로 저장
-      filepath =pickedFile!.path;
-    });
+  @override
+  void initState() {
+    super.initState();
+    _initializeCamera();
   }
+
+  void _initializeCamera() async {
+    final cameras = await availableCameras();
+    if (cameras.isNotEmpty) {
+      _cameraController = CameraController(cameras[0], ResolutionPreset.high);
+      await _cameraController.initialize();
+      setState(() {});
+    }
+  }
+
+  @override
+  void dispose() {
+    _cameraController.dispose();
+    super.dispose();
+  }
+
+  Future<void> captureImageAndPerformOCR() async {
+    if (_cameraController.value.isTakingPicture) {
+      return;
+    }
+    final XFile imageFile = await _cameraController.takePicture();
+    if (imageFile == null) {
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return Center(
+          child: CircularProgressIndicator(), // Loader widget
+        );
+      },
+    );
+
+    try {
+      var bytes = File(imageFile.path).readAsBytesSync();
+      String img64 = base64Encode(bytes);
+
+      var url = 'https://api.ocr.space/parse/image';
+      var payload = {
+        "base64Image": "data:image/jpg;base64,${img64.toString()}",
+        "language": "eng"
+      };
+      var header = {"apikey": "K86070579388957"};
+
+      var post = await http.post(Uri.parse(url), body: payload, headers: header);
+      var result = jsonDecode(post.body);
+
+      Navigator.pop(context); // Close the loader
+
+      // Navigate to a new screen with the captured image and extracted text.
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => CapturedScreen(
+            imagePath: imageFile.path,
+            extractedText: result['ParsedResults'][0]['ParsedText'],
+          ),
+        ),
+      );
+    } catch (e) {
+      Navigator.pop(context); // Close the loader
+      print('Error: $e');
+    }
+  }
+
+  Future<void> parsethetext(ImageSource source) async {
+    final pickedFile = await ImagePicker().getImage(source: source);
+    if (pickedFile == null) return;
+
+    try {
+      setState(() {
+        filepath = pickedFile.path;
+        parsedtext = 'OCR in progress...';
+      });
+
+      var bytes = File(pickedFile.path.toString()).readAsBytesSync();
+      String img64 = base64Encode(bytes);
+
+      var url = 'https://api.ocr.space/parse/image';
+      var payload = {
+        "base64Image": "data:image/jpg;base64,${img64.toString()}",
+        "language": "eng"
+      };
+      var header = {"apikey": "K86070579388957"};
+
+      var post = await http.post(Uri.parse(url), body: payload, headers: header);
+      var result = jsonDecode(post.body);
+
+      // Navigate to a new screen with the captured image and extracted text.
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => CapturedScreen(
+            imagePath: pickedFile.path,
+            extractedText: result['ParsedResults'][0]['ParsedText'],
+          ),
+        ),
+      );
+    } catch (e) {
+      print('Error: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final _imageSize = MediaQuery.of(context).size.width/4;
+    final isHorizontal = MediaQuery.of(context).orientation == Orientation.landscape;
 
     return Scaffold(
-      body: SingleChildScrollView(
-        child: Column(
-          children: <Widget>[
-            Container(
-              constraints: BoxConstraints(
-                minHeight: _imageSize,
-                minWidth: _imageSize,
+      appBar: AppBar(
+        title: Text('OCR APP'),
+      ),
+      body: Stack(
+        children: <Widget>[
+          if (_cameraController.value.isInitialized)
+            Positioned.fill(
+              child: AspectRatio(
+                aspectRatio: _cameraController.value.aspectRatio,
+                child: CameraPreview(_cameraController),
               ),
             ),
-              Container(
-                width: 400,
-                height: 200,
-                decoration: BoxDecoration(
-                  shape: BoxShape.rectangle,
-                  border: Border.all(
-                      width: 2, color: Theme.of(context).colorScheme.primary),
-                  image: DecorationImage(
-                      image: FileImage(File(filepath)),
-                      fit: BoxFit.contain),
-                ),
-              ),
+          Positioned(
+          bottom: 30,
+          left: 0, // Centered horizontally
+          right: 0, // Centered horizontally
+          child: IconButton(
+            onPressed: () {
+              if (parsedtext.isEmpty) {
+                if (_cameraController.value.isTakingPicture) {
+                  return;
+                }
+                captureImageAndPerformOCR();
+              }
+            },
+            icon: Icon(Icons.camera_alt_sharp, size: 48),
+            color: Colors.white,
+          ),
+        ),
+
+          if (parsedtext.isNotEmpty)
             Container(
-              margin: EdgeInsets.only(top: 30.0),
-              alignment: Alignment.center,
-              child: Text(
-                "OCR APP",
-                style: GoogleFonts.montserrat(
-                    fontWeight: FontWeight.w700, fontSize: 20),
-                textAlign: TextAlign.center,
-              ),
+              width: 200,
+              height: 200,
+              margin: EdgeInsets.all(10.0),
+              child: Image.file(File(filepath), fit: BoxFit.cover),
             ),
-            SizedBox(height: 15.0),
+          if (parsedtext.isNotEmpty)
             Container(
-                width: MediaQuery.of(context).size.width / 1,
-                height:MediaQuery.of(context).size.height /15,
-                child: ElevatedButton(
-                    onPressed: () => parsethetext(),
-                    child: Text('사진을 선택해주세요',
-                        style: GoogleFonts.montserrat(
-                            fontSize: 20, fontWeight: FontWeight.w700)))),
-            Container(
-              height:30,
-            ),
-            Container(
+              margin: EdgeInsets.all(10.0),
               alignment: Alignment.center,
               child: Column(
                 children: <Widget>[
-                  Text("추출된 텍스트는",style: GoogleFonts.montserrat(
-                      fontSize:20,
-                      fontWeight:FontWeight.bold
-                  ),),
-                  SizedBox(height:10.0),
-                  Text(parsedtext,style: GoogleFonts.montserrat(
-                      fontSize:25,
-                      fontWeight:FontWeight.bold
-                  ),)
+                  Text(
+                    "The extracted text is",
+                    style: GoogleFonts.montserrat(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  SizedBox(height: 10.0),
+                  Text(
+                    parsedtext,
+                    style: GoogleFonts.montserrat(
+                      fontSize: 25,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class CapturedScreen extends StatelessWidget {
+  final String imagePath;
+  final String extractedText;
+
+  CapturedScreen({required this.imagePath, required this.extractedText});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Captured Image and Text'),
+      ),
+      body: SingleChildScrollView(
+        child: Column(
+          children: [
+            Container(
+              width: 400,
+              height: 400,
+              margin: EdgeInsets.all(10.0),
+              child: Image.file(File(imagePath), fit: BoxFit.cover),
+            ),
+            Text(
+              "The extracted text is",
+              style: GoogleFonts.montserrat(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            Text(
+              extractedText,
+              style: GoogleFonts.montserrat(
+                fontSize: 25,
+                fontWeight: FontWeight.bold,
               ),
             ),
           ],
         ),
-      )
+      ),
     );
   }
+}
+
+void main() {
+  runApp(MaterialApp(
+    home: HomePage(),
+  ));
 }
